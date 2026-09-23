@@ -1,0 +1,8 @@
+{
+  "uuid": "raketa-tasks@pastila",
+  "name": "Raketa Tasks",
+  "description": "Мои задачи Raccoons из GitLab: статусы, MR, апрувы и неразрешённые треды.",
+  "shell-version": ["46"],
+  "settings-schema": "org.gnome.shell.extensions.raketa-tasks",
+  "url": ""
+}

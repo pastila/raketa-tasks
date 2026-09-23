@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.raketa-tasks" path="/org/gnome/shell/extensions/raketa-tasks/">
+    <key name="gitlab-host" type="s">
+      <default>'gitlab.com'</default>
+      <summary>Хост GitLab</summary>
+      <description>Передаётся в glab api --hostname; glab должен быть залогинен на этот хост.</description>
+    </key>
+    <key name="project-path" type="s">
+      <default>'raketa/raketa'</default>
+      <summary>Проект</summary>
+    </key>
+    <key name="team" type="s">
+      <default>'Raccoons'</default>
+      <summary>Команда</summary>
+      <description>Лейбл задач и префикс статусов (&gt;_Raccoons::InProgress и т.д.).</description>
+    </key>
+    <key name="refresh-interval" type="i">
+      <range min="1" max="120"/>
+      <default>5</default>
+      <summary>Интервал обновления, минуты</summary>
+    </key>
+    <key name="notify-changes" type="b">
+      <default>true</default>
+      <summary>Уведомлять об изменениях</summary>
+      <description>Новая задача, смена статуса, новые треды или апрув MR.</description>
+    </key>
+  </schema>
+</schemalist>

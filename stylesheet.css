@@ -1,0 +1,22 @@
+.raketa-tasks-alert {
+  color: #ff6b6b;
+  font-weight: bold;
+  margin-left: 6px;
+}
+
+.raketa-tasks-error,
+.raketa-tasks-group {
+  font-weight: bold;
+}
+
+.raketa-tasks-group {
+  font-size: 0.9em;
+}
+
+.raketa-tasks-title {
+  max-width: 480px;
+}
+
+.raketa-tasks-detail {
+  font-size: 0.9em;
+}
