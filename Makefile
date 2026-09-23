@@ -1,6 +1,6 @@
 UUID := raketa-tasks@pastila
 DEST := $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
-FILES := metadata.json extension.js gitlab.js prefs.js stylesheet.css schemas
+FILES := metadata.json extension.js gitlab.js mattermost.js prefs.js stylesheet.css schemas
 
 .PHONY: install enable uninstall pack schemas logs
 
@@ -21,7 +21,7 @@ uninstall:
 	rm -f $(DEST)
 
 pack: schemas
-	gnome-extensions pack --force --extra-source=gitlab.js --schema=schemas/org.gnome.shell.extensions.raketa-tasks.gschema.xml .
+	gnome-extensions pack --force --extra-source=gitlab.js --extra-source=mattermost.js --schema=schemas/org.gnome.shell.extensions.raketa-tasks.gschema.xml .
 
 logs:
 	journalctl --user -f -o cat /usr/bin/gnome-shell | grep --line-buffered -i raketa

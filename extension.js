@@ -12,6 +12,7 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {GitLabTasks} from './gitlab.js';
+import {MattermostRequests} from './mattermost.js';
 
 const GROUP_TITLES = {
     inprogress: '🔄 В работе',
@@ -43,7 +44,11 @@ function unresolvedThreads(task) {
     return task.mrs.reduce((sum, mr) => sum + mr.unresolvedThreads, 0);
 }
 
-function mrLine(mr) {
+function waitsForApproval(mr) {
+    return mr.state === 'opened' && !mr.draft && !mr.approved;
+}
+
+function mrLine(mr, requestsKnown) {
     let text = `MR !${mr.iid}`;
     if (mr.draft)
         text += ' (draft)';
@@ -57,6 +62,10 @@ function mrLine(mr) {
         text += ` · ждём: ${mr.pendingSections.join(', ')}`;
     if (mr.unresolvedThreads > 0)
         text += ` · 🚨 треды: ${mr.unresolvedThreads}`;
+    if (mr.requests.length > 0)
+        text += ` · 💬 ${[...new Set(mr.requests.map(request => request.channel))].join(', ')}`;
+    else if (requestsKnown && waitsForApproval(mr))
+        text += ' · 🔕 апрув не запрошен';
     return text;
 }
 
@@ -68,6 +77,9 @@ class TasksIndicator extends PanelMenu.Button {
         this._extension = extension;
         this._settings = extension.getSettings();
         this._gitlab = new GitLabTasks();
+        this._mattermost = new MattermostRequests();
+        this._requests = new Map();
+        this._mmError = null;
         this._cancellable = null;
         this._timerId = 0;
         this._data = null;
@@ -90,7 +102,7 @@ class TasksIndicator extends PanelMenu.Button {
 
         this._settingsChangedIds = [
             this._settings.connect('changed::refresh-interval', () => this._restartTimer()),
-            ...['gitlab-host', 'project-path', 'team'].map(key =>
+            ...['gitlab-host', 'project-path', 'team', 'mattermost-url', 'mattermost-channels', 'mattermost-days'].map(key =>
                 this._settings.connect(`changed::${key}`, () => this.refresh())),
         ];
 
@@ -123,7 +135,14 @@ class TasksIndicator extends PanelMenu.Button {
         this._updatePanel();
 
         try {
-            const data = await this._gitlab.fetch(this._source(), this._cancellable);
+            const [data, requests] = await Promise.all([
+                this._gitlab.fetch(this._source(), this._cancellable),
+                this._fetchRequests(this._cancellable),
+            ]);
+            for (const task of data.groups.flatMap(group => group.tasks)) {
+                for (const mr of task.mrs)
+                    mr.requests = requests.get(mr.iid) ?? [];
+            }
             this._data = data;
             this._error = null;
             this._updatedAt = GLib.DateTime.new_now_local();
@@ -140,6 +159,40 @@ class TasksIndicator extends PanelMenu.Button {
 
         this._updatePanel();
         this._rebuildMenu();
+    }
+
+    /**
+     * Approval requests from Mattermost; a failure here must not hide the tasks,
+     * so it is kept as a separate error and the last known requests stay.
+     */
+    async _fetchRequests(cancellable) {
+        const url = this._settings.get_string('mattermost-url').trim();
+        if (!url) {
+            this._requests = new Map();
+            this._mmError = null;
+            return this._requests;
+        }
+        try {
+            this._requests = await this._mattermost.fetch({
+                url,
+                channels: this._settings.get_strv('mattermost-channels'),
+                days: this._settings.get_int('mattermost-days'),
+                gitlabHost: this._settings.get_string('gitlab-host'),
+                project: this._settings.get_string('project-path'),
+            }, cancellable);
+            this._mmError = null;
+        } catch (e) {
+            if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                throw e;
+            this._mmError = e.message;
+            console.warn(`Raketa Tasks: ${e.message}`);
+        }
+        return this._requests;
+    }
+
+    // Without a working Mattermost "no request found" means nothing, so the hint is hidden
+    _requestsKnown() {
+        return this._settings.get_string('mattermost-url').trim() !== '' && !this._mmError;
     }
 
     _source() {
@@ -187,6 +240,12 @@ class TasksIndicator extends PanelMenu.Button {
         if (this._error) {
             const error = new PopupMenu.PopupMenuItem(`⚠ ${this._error}`, {reactive: false});
             error.label.add_style_class_name('raketa-tasks-error');
+            error.label.clutter_text.line_wrap = true;
+            this.menu.addMenuItem(error);
+        }
+        if (this._mmError) {
+            const error = new PopupMenu.PopupMenuItem(`⚠ ${this._mmError}`, {reactive: false});
+            error.label.add_style_class_name('raketa-tasks-detail');
             error.label.clutter_text.line_wrap = true;
             this.menu.addMenuItem(error);
         }
@@ -254,6 +313,8 @@ class TasksIndicator extends PanelMenu.Button {
             badges.push(task.hacks.some(hack => hack.mustRemove) ? '🏑🚨' : '🏑');
         if (task.mrs.length > 0 && task.mrs.every(mr => mr.approved || mr.state === 'merged'))
             badges.push('✅');
+        else if (this._requestsKnown() && task.mrs.some(mr => waitsForApproval(mr) && mr.requests.length === 0))
+            badges.push('🔕');
 
         const item = new PopupMenu.PopupSubMenuMenuItem([`#${task.iid}`, ...badges, ` ${task.title}`].join(' '));
         item.label.add_style_class_name('raketa-tasks-title');
@@ -271,8 +332,13 @@ class TasksIndicator extends PanelMenu.Button {
 
         if (task.mrs.length === 0)
             detail('MR: нет');
-        for (const mr of task.mrs)
-            item.menu.addAction(mrLine(mr), () => openUri(mr.url));
+        for (const mr of task.mrs) {
+            item.menu.addAction(mrLine(mr, this._requestsKnown()), () => openUri(mr.url));
+            for (const request of mr.requests) {
+                const date = GLib.DateTime.new_from_unix_local(Math.floor(request.createAt / 1000)).format('%d.%m %H:%M');
+                item.menu.addAction(`      💬 запрос в ${request.channel} · ${date}`, () => openUri(request.permalink));
+            }
+        }
 
         item.menu.addAction(`Открыть задачу #${task.iid}`, () => openUri(task.url));
         item.menu.addAction('Скопировать номер', () => {
@@ -333,6 +399,7 @@ class TasksIndicator extends PanelMenu.Button {
             this._timerId = 0;
         }
         this._settingsChangedIds.forEach(id => this._settings.disconnect(id));
+        this._mattermost.destroy();
         this._notificationSource?.destroy();
         super.destroy();
     }
