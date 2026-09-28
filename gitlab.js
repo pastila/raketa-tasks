@@ -19,6 +19,7 @@ fragment MrInfo on MergeRequest {
   resolvableDiscussionsCount
   resolvedDiscussionsCount
   approvalState { rules { type section approved approvalsRequired } }
+  headPipeline { status path }
 }
 query($project: ID!, $username: String!, $label: String!, $weekAgo: Time!, $monthAgo: Time!) {
   project(fullPath: $project) {
@@ -44,7 +45,7 @@ query($project: ID!, $username: String!, $label: String!, $weekAgo: Time!, $mont
   }
 }`;
 
-export const GROUP_KEYS = ['inprogress', 'todo', 'codereview', 'testing', 'approval', 'other'];
+export const GROUP_KEYS = ['inprogress', 'rework', 'todo', 'codereview', 'testing', 'approval', 'other'];
 
 /**
  * Runs `glab api --hostname HOST ...` and returns the parsed JSON.
@@ -85,6 +86,9 @@ async function glabApi(host, args, cancellable) {
 function groupOf(statuses, team) {
     if (statuses.includes(`>_${team}::InProgress`))
         return 'inprogress';
+    // Вернули на доработку (после ревью или тестирования) — следующая на очереди после текущей
+    if (statuses.includes(`>_${team}::ReadyForRework`))
+        return 'rework';
     if (statuses.includes(`>_${team}::TODO`) || statuses.length === 0)
         return 'todo';
     if (statuses.includes(`>_${team}::CodeReview`))
@@ -108,7 +112,14 @@ function pendingSections(mr) {
     return [...new Set(sections)];
 }
 
-function toTask(node, team) {
+// Last pipeline of the MR's source branch; only a finished failure counts, a rerun in progress clears it
+function failedPipelineUrl(mr, host) {
+    if (mr.state !== 'opened' || mr.headPipeline?.status !== 'FAILED')
+        return null;
+    return `https://${host}${mr.headPipeline.path}`;
+}
+
+function toTask(node, team, host) {
     const labels = node.widgets.flatMap(widget => widget.labels?.nodes.map(label => label.title) ?? []);
     if (labels.includes(`>_${team}::Done`))
         return null;
@@ -131,6 +142,7 @@ function toTask(node, team) {
                 approvals: mr.approvedBy.nodes.length,
                 unresolvedThreads: mr.state === 'opened' && !mr.approved ? Math.max(open, 0) : 0,
                 pendingSections: mr.state === 'opened' && !mr.approved ? pendingSections(mr) : [],
+                failedPipelineUrl: failedPipelineUrl(mr, host),
             });
         }
     }
@@ -158,7 +170,7 @@ export class GitLabTasks {
 
     /**
      * Open work items of the glab user with the team label, grouped by status:
-     * InProgress → TODO → CodeReview → Testing → Approval → other; Done is skipped.
+     * InProgress → ReadyForRework → TODO → CodeReview → Testing → Approval → other; Done is skipped.
      * Priority is not a group of its own — it shows as a badge on the task.
      */
     async fetch({host, project, team}, cancellable) {
@@ -180,7 +192,7 @@ export class GitLabTasks {
 
         const projectData = response.data.project;
         const tasks = (projectData?.workItems.nodes ?? [])
-            .map(node => toTask(node, team))
+            .map(node => toTask(node, team, host))
             .filter(task => task !== null);
 
         return {

@@ -16,6 +16,7 @@ import {MattermostRequests} from './mattermost.js';
 
 const GROUP_TITLES = {
     inprogress: '🔄 В работе',
+    rework: '🔁 На доработку',
     todo: '📋 TODO',
     codereview: '👀 Code review',
     testing: '🧪 Тестирование',
@@ -62,6 +63,8 @@ function mrLine(mr, requestsKnown) {
         text += ` · ждём: ${mr.pendingSections.join(', ')}`;
     if (mr.unresolvedThreads > 0)
         text += ` · 🚨 треды: ${mr.unresolvedThreads}`;
+    if (mr.failedPipelineUrl)
+        text += ' · ❌ пайплайн';
     if (mr.requests.length > 0)
         text += ` · 💬 ${[...new Set(mr.requests.map(request => request.channel))].join(', ')}`;
     else if (requestsKnown && waitsForApproval(mr))
@@ -309,6 +312,8 @@ class TasksIndicator extends PanelMenu.Button {
         const threads = unresolvedThreads(task);
         if (threads > 0)
             badges.push(`🚨${threads}`);
+        if (task.mrs.some(mr => mr.failedPipelineUrl))
+            badges.push('❌');
         if (task.hacks.length > 0)
             badges.push(task.hacks.some(hack => hack.mustRemove) ? '🏑🚨' : '🏑');
         if (task.mrs.length > 0 && task.mrs.every(mr => mr.approved || mr.state === 'merged'))
@@ -334,6 +339,8 @@ class TasksIndicator extends PanelMenu.Button {
             detail('MR: нет');
         for (const mr of task.mrs) {
             item.menu.addAction(mrLine(mr, this._requestsKnown()), () => openUri(mr.url));
+            if (mr.failedPipelineUrl)
+                item.menu.addAction('      ❌ пайплайн упал — открыть', () => openUri(mr.failedPipelineUrl));
             for (const request of mr.requests) {
                 const date = GLib.DateTime.new_from_unix_local(Math.floor(request.createAt / 1000)).format('%d.%m %H:%M');
                 item.menu.addAction(`      💬 запрос в ${request.channel} · ${date}`, () => openUri(request.permalink));
@@ -369,6 +376,8 @@ class TasksIndicator extends PanelMenu.Button {
                 const mrBefore = before.mrs.find(m => m.iid === mr.iid);
                 if (mr.unresolvedThreads > (mrBefore?.unresolvedThreads ?? 0))
                     this._notify(`#${iid}: новые треды в MR !${mr.iid}`, `Неразрешённых: ${mr.unresolvedThreads}`, mr.url);
+                if (mr.failedPipelineUrl && mrBefore && !mrBefore.failedPipelineUrl)
+                    this._notify(`#${iid}: пайплайн MR !${mr.iid} упал ❌`, task.title, mr.failedPipelineUrl);
                 if (mr.approved && mrBefore && !mrBefore.approved)
                     this._notify(`#${iid}: MR !${mr.iid} апрувнут ✅`, task.title, mr.url);
             }
