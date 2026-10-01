@@ -49,6 +49,26 @@ function waitsForApproval(mr) {
     return mr.state === 'opened' && !mr.draft && !mr.approved;
 }
 
+/** Reactions of one kind over all approval requests of the MR, one per reviewer (the earliest). */
+function reactions(mr, kind) {
+    const byUser = new Map();
+    for (const reaction of mr.requests.flatMap(request => request[kind])) {
+        if (!byUser.has(reaction.userId) || byUser.get(reaction.userId).createAt > reaction.createAt)
+            byUser.set(reaction.userId, reaction);
+    }
+    return [...byUser.values()];
+}
+
+// 👀 without a ✔️ from the same person: looking, not finished yet
+function reviewing(mr) {
+    const approvers = new Set(reactions(mr, 'approvals').map(reaction => reaction.userId));
+    return reactions(mr, 'reviews').filter(reaction => !approvers.has(reaction.userId));
+}
+
+function formatTime(ms) {
+    return GLib.DateTime.new_from_unix_local(Math.floor(ms / 1000)).format('%d.%m %H:%M');
+}
+
 function mrLine(mr, requestsKnown) {
     let text = `MR !${mr.iid}`;
     if (mr.draft)
@@ -67,6 +87,12 @@ function mrLine(mr, requestsKnown) {
         text += ' · ❌ пайплайн';
     if (mr.requests.length > 0)
         text += ` · 💬 ${[...new Set(mr.requests.map(request => request.channel))].join(', ')}`;
+    const looking = reviewing(mr);
+    if (looking.length > 0)
+        text += ` · 👀 ${looking.map(reaction => reaction.user).join(', ')}`;
+    const approvedInChat = reactions(mr, 'approvals');
+    if (approvedInChat.length > 0)
+        text += ` · ✔️ ${approvedInChat.map(reaction => reaction.user).join(', ')}`;
     else if (requestsKnown && waitsForApproval(mr))
         text += ' · 🔕 апрув не запрошен';
     return text;
@@ -83,6 +109,7 @@ class TasksIndicator extends PanelMenu.Button {
         this._mattermost = new MattermostRequests();
         this._requests = new Map();
         this._mmError = null;
+        this._requestsKnownBefore = false;
         this._cancellable = null;
         this._timerId = 0;
         this._data = null;
@@ -105,7 +132,8 @@ class TasksIndicator extends PanelMenu.Button {
 
         this._settingsChangedIds = [
             this._settings.connect('changed::refresh-interval', () => this._restartTimer()),
-            ...['gitlab-host', 'project-path', 'team', 'mattermost-url', 'mattermost-channels', 'mattermost-days'].map(key =>
+            ...['gitlab-host', 'project-path', 'team', 'mattermost-url', 'mattermost-channels', 'mattermost-days',
+                'mattermost-review-emoji', 'mattermost-approve-emoji'].map(key =>
                 this._settings.connect(`changed::${key}`, () => this.refresh())),
         ];
 
@@ -182,6 +210,8 @@ class TasksIndicator extends PanelMenu.Button {
                 days: this._settings.get_int('mattermost-days'),
                 gitlabHost: this._settings.get_string('gitlab-host'),
                 project: this._settings.get_string('project-path'),
+                reviewEmoji: this._settings.get_strv('mattermost-review-emoji'),
+                approveEmoji: this._settings.get_strv('mattermost-approve-emoji'),
             }, cancellable);
             this._mmError = null;
         } catch (e) {
@@ -320,6 +350,8 @@ class TasksIndicator extends PanelMenu.Button {
             badges.push('✅');
         else if (this._requestsKnown() && task.mrs.some(mr => waitsForApproval(mr) && mr.requests.length === 0))
             badges.push('🔕');
+        else if (task.mrs.some(mr => waitsForApproval(mr) && reviewing(mr).length > 0))
+            badges.push('👀');
 
         const item = new PopupMenu.PopupSubMenuMenuItem([`#${task.iid}`, ...badges, ` ${task.title}`].join(' '));
         item.label.add_style_class_name('raketa-tasks-title');
@@ -342,8 +374,14 @@ class TasksIndicator extends PanelMenu.Button {
             if (mr.failedPipelineUrl)
                 item.menu.addAction('      ❌ пайплайн упал — открыть', () => openUri(mr.failedPipelineUrl));
             for (const request of mr.requests) {
-                const date = GLib.DateTime.new_from_unix_local(Math.floor(request.createAt / 1000)).format('%d.%m %H:%M');
-                item.menu.addAction(`      💬 запрос в ${request.channel} · ${date}`, () => openUri(request.permalink));
+                item.menu.addAction(`      💬 запрос в ${request.channel} · ${formatTime(request.createAt)}`,
+                    () => openUri(request.permalink));
+                const marks = [
+                    ...request.reviews.map(reaction => ({...reaction, icon: '👀'})),
+                    ...request.approvals.map(reaction => ({...reaction, icon: '✔️'})),
+                ].sort((a, b) => a.createAt - b.createAt);
+                for (const mark of marks)
+                    detail(`            ${mark.icon} ${mark.user} · ${formatTime(mark.createAt)}`);
             }
         }
 
@@ -359,6 +397,9 @@ class TasksIndicator extends PanelMenu.Button {
         const current = new Map(data.groups.flatMap(group => group.tasks).map(task => [task.iid, task]));
         const previous = this._previous;
         this._previous = current;
+        // After Mattermost was off or failing every existing 👀 would look new
+        const reactionsComparable = this._requestsKnown() && this._requestsKnownBefore;
+        this._requestsKnownBefore = this._requestsKnown();
 
         if (!previous || !this._settings.get_boolean('notify-changes'))
             return;
@@ -380,6 +421,11 @@ class TasksIndicator extends PanelMenu.Button {
                     this._notify(`#${iid}: пайплайн MR !${mr.iid} упал ❌`, task.title, mr.failedPipelineUrl);
                 if (mr.approved && mrBefore && !mrBefore.approved)
                     this._notify(`#${iid}: MR !${mr.iid} апрувнут ✅`, task.title, mr.url);
+                if (mrBefore && reactionsComparable) {
+                    const seen = new Set(reactions(mrBefore, 'reviews').map(reaction => reaction.userId));
+                    for (const reaction of reactions(mr, 'reviews').filter(r => !seen.has(r.userId)))
+                        this._notify(`#${iid}: ${reaction.user} смотрит MR !${mr.iid} 👀`, task.title, mr.url);
+                }
             }
         }
     }

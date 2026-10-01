@@ -31,7 +31,7 @@ export default class RaketaTasksPreferences extends ExtensionPreferences {
 
         const notify = new Adw.SwitchRow({
             title: 'Уведомления об изменениях',
-            subtitle: 'Новая задача, смена статуса, новые треды, апрув MR',
+            subtitle: 'Новая задача, смена статуса, новые треды, апрув MR, начало ревью',
         });
         settings.bind('notify-changes', notify, 'active', Gio.SettingsBindFlags.DEFAULT);
         group.add(notify);
@@ -44,7 +44,8 @@ export default class RaketaTasksPreferences extends ExtensionPreferences {
     _mattermostGroup(settings, window) {
         const group = new Adw.PreferencesGroup({
             title: 'Mattermost',
-            description: 'Запросы апрува — ваши сообщения со ссылкой на MR в каналах ревью. Только чтение. ' +
+            description: 'Запросы апрува — ваши сообщения со ссылкой на MR в каналах ревью, реакции на них — ход ревью. ' +
+                'Только чтение. ' +
                 'Токен — значение cookie MMAUTHTOKEN из браузера, хранится в keyring.',
         });
 
@@ -52,11 +53,17 @@ export default class RaketaTasksPreferences extends ExtensionPreferences {
         settings.bind('mattermost-url', url, 'text', Gio.SettingsBindFlags.DEFAULT);
         group.add(url);
 
-        const channels = new Adw.EntryRow({title: 'Каналы через запятую (имя из URL канала)'});
-        channels.text = settings.get_strv('mattermost-channels').join(', ');
-        channels.connect('changed', () => settings.set_strv('mattermost-channels',
-            channels.text.split(',').map(name => name.trim()).filter(name => name !== '')));
-        group.add(channels);
+        for (const [key, title] of [
+            ['mattermost-channels', 'Каналы через запятую (имя из URL канала)'],
+            ['mattermost-review-emoji', 'Реакции «начал ревью» через запятую (eyes)'],
+            ['mattermost-approve-emoji', 'Реакции «апрувнул» через запятую (white_check_mark)'],
+        ]) {
+            const row = new Adw.EntryRow({title});
+            row.text = settings.get_strv(key).join(', ');
+            row.connect('changed', () => settings.set_strv(key,
+                row.text.split(',').map(name => name.trim().replace(/^:|:$/g, '')).filter(name => name !== '')));
+            group.add(row);
+        }
 
         const days = new Adw.SpinRow({
             title: 'Глубина поиска',

@@ -23,7 +23,7 @@
     <key name="notify-changes" type="b">
       <default>true</default>
       <summary>Уведомлять об изменениях</summary>
-      <description>Новая задача, смена статуса, новые треды или апрув MR.</description>
+      <description>Новая задача, смена статуса, новые треды, апрув MR или начало ревью (реакция в Mattermost).</description>
     </key>
     <key name="mattermost-url" type="s">
       <default>''</default>
@@ -39,6 +39,16 @@
       <range min="1" max="180"/>
       <default>30</default>
       <summary>Глубина поиска запросов апрува, дни</summary>
+    </key>
+    <key name="mattermost-review-emoji" type="as">
+      <default>['eyes']</default>
+      <summary>Реакции «начал ревью»</summary>
+      <description>Имена эмоджи (как в :eyes:) на запросе апрува, означающие, что ревьюер начал смотреть MR.</description>
+    </key>
+    <key name="mattermost-approve-emoji" type="as">
+      <default>['white_check_mark']</default>
+      <summary>Реакции «апрувнул»</summary>
+      <description>Имена эмоджи на запросе апрува, означающие, что ревьюер закончил и апрувнул MR.</description>
     </key>
   </schema>
 </schemalist>

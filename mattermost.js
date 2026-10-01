@@ -65,6 +65,7 @@ export class MattermostRequests {
         this._channels = null;
         this._posts = new Map();
         this._syncedAt = new Map();
+        this._users = new Map();
     }
 
     async _get(url, token, path, cancellable) {
@@ -99,7 +100,43 @@ export class MattermostRequests {
         if (post.delete_at > 0 || post.user_id !== this._me)
             this._posts.delete(post.id);
         else
-            this._posts.set(post.id, {id: post.id, channel, createAt: post.create_at, message: post.message});
+            this._posts.set(post.id, {
+                id: post.id,
+                channel,
+                createAt: post.create_at,
+                message: post.message,
+                // Reactions come inline, and adding one bumps the post's update_at, so `since` sees it
+                reactions: (post.metadata?.reactions ?? [])
+                    .filter(reaction => reaction.user_id !== this._me)
+                    .map(reaction => ({emoji: reaction.emoji_name, userId: reaction.user_id, createAt: reaction.create_at})),
+            });
+    }
+
+    /** Display name for a user id: full name, else username; cached for the session. */
+    async _userName(url, token, userId, cancellable) {
+        if (!this._users.has(userId)) {
+            const user = await this._get(url, token, `/users/${userId}`, cancellable);
+            this._users.set(userId, `${user.first_name ?? ''} ${user.last_name ?? ''}`.trim() || user.username);
+        }
+        return this._users.get(userId);
+    }
+
+    /** Reactions from the given emoji list, one per user (the earliest), oldest first. */
+    async _reactionsOf(url, token, post, emoji, cancellable) {
+        const byUser = new Map();
+        for (const reaction of post.reactions.filter(r => emoji.includes(r.emoji))) {
+            if (!byUser.has(reaction.userId) || byUser.get(reaction.userId).createAt > reaction.createAt)
+                byUser.set(reaction.userId, reaction);
+        }
+        const reactions = [];
+        for (const reaction of byUser.values()) {
+            reactions.push({
+                userId: reaction.userId,
+                user: await this._userName(url, token, reaction.userId, cancellable),
+                createAt: reaction.createAt,
+            });
+        }
+        return reactions.sort((a, b) => a.createAt - b.createAt);
     }
 
     async _syncChannel(url, token, channel, cutoff, cancellable) {
@@ -124,9 +161,10 @@ export class MattermostRequests {
 
     /**
      * Map MR iid → my posts linking it, newest first:
-     * [{channel, createAt, permalink}], where permalink opens the post in Mattermost.
+     * [{channel, createAt, permalink, reviews, approvals}], where permalink opens the post in Mattermost,
+     * reviews / approvals — [{userId, user, createAt}] from reactions with reviewEmoji / approveEmoji.
      */
-    async fetch({url, channels, days, gitlabHost, project}, cancellable) {
+    async fetch({url, channels, days, gitlabHost, project, reviewEmoji, approveEmoji}, cancellable) {
         url = url.replace(/\/+$/, '');
         const key = JSON.stringify([url, channels]);
         if (key !== this._key)
@@ -157,6 +195,10 @@ export class MattermostRequests {
                 continue;
             }
             const iids = new Set([...post.message.matchAll(mrLink)].map(match => match[1]));
+            if (iids.size === 0)
+                continue;
+            const reviews = await this._reactionsOf(url, token, post, reviewEmoji, cancellable);
+            const approvals = await this._reactionsOf(url, token, post, approveEmoji, cancellable);
             for (const iid of iids) {
                 if (!requests.has(iid))
                     requests.set(iid, []);
@@ -164,6 +206,8 @@ export class MattermostRequests {
                     channel: post.channel.name,
                     createAt: post.createAt,
                     permalink: `${url}/${post.channel.team}/pl/${post.id}`,
+                    reviews,
+                    approvals,
                 });
             }
         }
