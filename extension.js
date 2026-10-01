@@ -87,14 +87,14 @@ function mrLine(mr, requestsKnown) {
         text += ' · ❌ пайплайн';
     if (mr.requests.length > 0)
         text += ` · 💬 ${[...new Set(mr.requests.map(request => request.channel))].join(', ')}`;
+    else if (requestsKnown && waitsForApproval(mr))
+        text += ' · 🔕 апрув не запрошен';
     const looking = reviewing(mr);
     if (looking.length > 0)
         text += ` · 👀 ${looking.map(reaction => reaction.user).join(', ')}`;
     const approvedInChat = reactions(mr, 'approvals');
     if (approvedInChat.length > 0)
         text += ` · ✔️ ${approvedInChat.map(reaction => reaction.user).join(', ')}`;
-    else if (requestsKnown && waitsForApproval(mr))
-        text += ' · 🔕 апрув не запрошен';
     return text;
 }
 
